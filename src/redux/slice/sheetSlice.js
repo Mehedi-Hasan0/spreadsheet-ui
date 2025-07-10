@@ -1,32 +1,38 @@
 // redux/slice/sheetSlice.js
 import { createSlice } from "@reduxjs/toolkit";
 
-// Define initial state for a 25x26 grid (increased from 5x26)
-const initialCells = {};
-for (let r = 0; r < 25; r++) {
-  for (let c = 0; c < 26; c++) {
-    const col = String.fromCharCode(65 + c);
-    initialCells[`${col}${r + 1}`] = {
-      value: "",
-      formula: null,
-      display: "",
-      format: {
-        bold: false,
-        italic: false,
-        underline: false,
-        textColor: "#000000",
-        backgroundColor: "#ffffff",
-        fontSize: 13,
-        fontFamily: "arial",
-        alignment: "left",
-        numberFormat: "general",
-      },
-    };
+// Cell factory function following SoC pattern
+const createEmptyCell = () => ({
+  value: "",
+  formula: null,
+  display: "",
+  format: {
+    bold: false,
+    italic: false,
+    underline: false,
+    textColor: "#000000",
+    backgroundColor: "#ffffff",
+    fontSize: 13,
+    fontFamily: "arial",
+    alignment: "left",
+    numberFormat: "general",
+  },
+});
+
+// Initialize cells utility
+const initializeCells = (rows = 25, cols = 26) => {
+  const cells = {};
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const col = String.fromCharCode(65 + c);
+      cells[`${col}${r + 1}`] = createEmptyCell();
+    }
   }
-}
+  return cells;
+};
 
 const initialState = {
-  cells: initialCells,
+  cells: initializeCells(),
   selectedCell: null,
   selectedRange: null,
   sheets: [
@@ -35,6 +41,8 @@ const initialState = {
     { id: "3", name: "Sheet3", active: false },
   ],
   activeSheetId: "1",
+  isLoading: false,
+  lastSaved: null,
 };
 
 const sheetSlice = createSlice({
@@ -44,9 +52,13 @@ const sheetSlice = createSlice({
     // Main action for updating cells from user input
     updateCellFromInput: (state, action) => {
       const { address, inputValue } = action.payload;
-      const cell = state.cells[address];
 
-      if (!cell) return;
+      // Ensure cell exists
+      if (!state.cells[address]) {
+        state.cells[address] = createEmptyCell();
+      }
+
+      const cell = state.cells[address];
 
       // Determine if it's a formula or a direct value
       if (inputValue.startsWith("=")) {
@@ -72,39 +84,81 @@ const sheetSlice = createSlice({
       }
     },
 
-    // Load sheet state from storage
+    // Load sheet state from storage - improved with better merge logic
     loadSheetState: (state, action) => {
       const loadedState = action.payload;
-      state.cells = { ...state.cells, ...loadedState.cells };
-      if (loadedState.sheets) {
-        state.sheets = loadedState.sheets;
+
+      console.log("Loading sheet state:", loadedState);
+
+      // Merge cells with existing structure
+      if (loadedState.cells) {
+        // Start with the current initialized cells
+        const mergedCells = { ...state.cells };
+
+        // Update with loaded data, ensuring proper structure
+        Object.keys(loadedState.cells).forEach((address) => {
+          const loadedCell = loadedState.cells[address];
+
+          // Ensure the cell has all required properties
+          mergedCells[address] = {
+            ...createEmptyCell(),
+            ...loadedCell,
+            // Ensure format object is properly structured
+            format: {
+              ...createEmptyCell().format,
+              ...(loadedCell.format || {}),
+            },
+          };
+        });
+
+        state.cells = mergedCells;
+        console.log("Merged cells:", Object.keys(mergedCells).length);
       }
+
+      // Load sheets if provided
+      if (loadedState.sheets && Array.isArray(loadedState.sheets)) {
+        state.sheets = loadedState.sheets;
+        console.log("Loaded sheets:", loadedState.sheets.length);
+      }
+
+      // Load active sheet ID
       if (loadedState.activeSheetId) {
         state.activeSheetId = loadedState.activeSheetId;
+        console.log("Set active sheet:", loadedState.activeSheetId);
       }
+
+      // Update last saved timestamp
+      state.lastSaved = new Date().toISOString();
+
+      console.log("Sheet state loaded successfully");
     },
 
     // Update cell formatting
     updateCellFormat: (state, action) => {
       const { address, format } = action.payload;
-      if (state.cells[address]) {
-        state.cells[address].format = {
-          ...state.cells[address].format,
-          ...format,
-        };
+
+      if (!state.cells[address]) {
+        state.cells[address] = createEmptyCell();
       }
+
+      state.cells[address].format = {
+        ...state.cells[address].format,
+        ...format,
+      };
     },
 
     // Update multiple cells formatting (for range selection)
     updateRangeFormat: (state, action) => {
       const { addresses, format } = action.payload;
       addresses.forEach((address) => {
-        if (state.cells[address]) {
-          state.cells[address].format = {
-            ...state.cells[address].format,
-            ...format,
-          };
+        if (!state.cells[address]) {
+          state.cells[address] = createEmptyCell();
         }
+
+        state.cells[address].format = {
+          ...state.cells[address].format,
+          ...format,
+        };
       });
     },
 
@@ -161,23 +215,18 @@ const sheetSlice = createSlice({
     // Clear sheet data
     clearSheet: (state) => {
       Object.keys(state.cells).forEach((address) => {
-        state.cells[address] = {
-          value: "",
-          formula: null,
-          display: "",
-          format: {
-            bold: false,
-            italic: false,
-            underline: false,
-            textColor: "#000000",
-            backgroundColor: "#ffffff",
-            fontSize: 13,
-            fontFamily: "arial",
-            alignment: "left",
-            numberFormat: "general",
-          },
-        };
+        state.cells[address] = createEmptyCell();
       });
+    },
+
+    // Set loading state
+    setLoading: (state, action) => {
+      state.isLoading = action.payload;
+    },
+
+    // Update last saved timestamp
+    updateLastSaved: (state) => {
+      state.lastSaved = new Date().toISOString();
     },
   },
 });
@@ -195,6 +244,8 @@ export const {
   renameSheet,
   deleteSheet,
   clearSheet,
+  setLoading,
+  updateLastSaved,
 } = sheetSlice.actions;
 
 export default sheetSlice.reducer;
