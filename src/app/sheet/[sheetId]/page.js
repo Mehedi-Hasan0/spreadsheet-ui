@@ -1,10 +1,10 @@
 // app/sheet/[sheetId]/page.js
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, use } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { RevoGrid } from "@revolist/react-datagrid";
-import { updateCellFromInput } from "@/redux/slice/sheetSlice";
+import { updateAndRecalculate } from "@/redux/slice/sheetSlice";
 import { usePersistentStorage } from "@/hooks/usePersistentStorage";
 import { useFormulaCalculation } from "@/hooks/useFormulaCalculation";
 import Toolbar from "@/components/sheet/Toolbar";
@@ -26,10 +26,6 @@ const selectGridRows = (state) => {
   return rows;
 };
 
-// --- START OF CORRECTION 1 ---
-// The `cellTemplate` property has been removed.
-// By removing it, we allow RevoGrid to use its default renderer and editor,
-// which is necessary to trigger the `onAfterEdit` event.
 const selectGridColumns = () => {
   const columns = [];
   for (let c = 0; c < 26; c++) {
@@ -43,7 +39,6 @@ const selectGridColumns = () => {
   }
   return columns;
 };
-// --- END OF CORRECTION 1 ---
 
 export default function SheetPage({ params }) {
   const dispatch = useDispatch();
@@ -55,22 +50,21 @@ export default function SheetPage({ params }) {
   const [selectedCell, setSelectedCell] = useState(null);
   const [showFileMenu, setShowFileMenu] = useState(false);
   const [sheetId, setSheetId] = useState(null);
+  // Added state for tracking editing cell and pending value
+  const [currentEditingCell, setCurrentEditingCell] = useState(null);
+  const [pendingEditValue, setPendingEditValue] = useState(null);
 
-  let activeSheet = null;
+  const useParams = use(params);
 
-  (async() => {
-    activeSheet = await params?.sheetId;
-  })()
-
+  // Fix: Use useEffect to handle sheetId from params
   useEffect(() => {
-    if (activeSheet) {
-      console.log("Setting sheet ID:", activeSheet);
-      setSheetId(activeSheet);
+    if (useParams?.sheetId) {
+      setSheetId(useParams?.sheetId);
     }
-  }, [activeSheet]);
+  }, [useParams?.sheetId]);
 
   const storageHook = usePersistentStorage(sheetId);
-  useFormulaCalculation();
+  // useFormulaCalculation();
 
   useEffect(() => {
     if (storageHook?.isLoaded && sheetId) {
@@ -84,13 +78,15 @@ export default function SheetPage({ params }) {
     }
   }, [storageHook?.isLoaded, sheetId, cells]);
 
-
   const handleAfterEdit = (e) => {
     console.log("afteredit event triggered:", e);
     const address = `${e.detail.prop}${e.detail.rowIndex + 1}`;
     const inputValue = e.detail.val;
     console.log(`After edit cell ${address} with value:`, inputValue);
-    dispatch(updateCellFromInput({ address, inputValue }));
+    dispatch(updateAndRecalculate({ address, inputValue }));
+    // Clear editing state after saving
+    setCurrentEditingCell(null);
+    setPendingEditValue(null);
   };
 
   const handleBeforeEdit = (e) => {
@@ -113,28 +109,28 @@ export default function SheetPage({ params }) {
 
   const handleBeforeCellFocus = (e) => {
     console.log("beforecellfocus event triggered:", e);
+    const newAddress = `${e.detail.prop}${e.detail.rowIndex + 1}`;
+    setSelectedCell(newAddress);
 
     // If we have a cell being edited and we're moving to a different cell
-    if (currentEditingCell && pendingEditValue !== null) {
-      const newAddress = `${e.detail.prop}${e.detail.rowIndex + 1}`;
-
-      // Only save if we're moving to a different cell
-      if (newAddress !== currentEditingCell) {
-        console.log(
-          `Auto-saving cell ${currentEditingCell} with value:`,
-          pendingEditValue
-        );
-        dispatch(
-          updateCellFromInput({
-            address: currentEditingCell,
-            inputValue: pendingEditValue,
-          })
-        );
-
-        // Clear editing state
-        setCurrentEditingCell(null);
-        setPendingEditValue(null);
-      }
+    if (
+      currentEditingCell &&
+      pendingEditValue !== null &&
+      newAddress !== currentEditingCell
+    ) {
+      console.log(
+        `Auto-saving cell ${currentEditingCell} with value:`,
+        pendingEditValue
+      );
+      dispatch(
+        updateAndRecalculate({
+          address: currentEditingCell,
+          inputValue: pendingEditValue,
+        })
+      );
+      // Clear editing state
+      setCurrentEditingCell(null);
+      setPendingEditValue(null);
     }
   };
 
@@ -156,7 +152,6 @@ export default function SheetPage({ params }) {
 
   const handleCloseEdit = (e) => {
     console.log("closeedit event triggered:", e);
-
     // If we have pending changes, save them
     if (currentEditingCell && pendingEditValue !== null) {
       console.log(
@@ -164,23 +159,23 @@ export default function SheetPage({ params }) {
         pendingEditValue
       );
       dispatch(
-        updateCellFromInput({
+        updateAndRecalculate({
           address: currentEditingCell,
           inputValue: pendingEditValue,
         })
       );
     }
-
     // Clear editing state
     setCurrentEditingCell(null);
     setPendingEditValue(null);
   };
 
   const handleFormulaBarChange = (value) => {
+    console.log("Formula bar change:", value);
     if (selectedCell) {
       console.log(`Updating ${selectedCell} via formula bar:`, value);
       dispatch(
-        updateCellFromInput({ address: selectedCell, inputValue: value })
+        updateAndRecalculate({ address: selectedCell, inputValue: value })
       );
     }
   };
@@ -286,13 +281,14 @@ export default function SheetPage({ params }) {
             columns={columns}
             onAfteredit={handleAfterEdit}
             onBeforeedit={handleBeforeEdit}
+            onBeforeeditstart={handleBeforeEditStart}
+            onBeforecellfocus={handleBeforeCellFocus}
+            onCelleditinit={handleCellEditInit}
+            onCelleditapply={handleCellEditApply}
+            onCloseedit={handleCloseEdit}
             range={true}
             rowHeaders={true}
             columnHeaders={true}
-            // --- START OF CORRECTION 2 ---
-            // The styles from the old `cellTemplate` are now applied here
-            // using RevoGrid's CSS variables for better performance and to
-            // ensure the default editor is used.
             style={{
               "--revogrid-border-color": "#e0e0e0",
               "--revogrid-header-background": "#f8f9fa",
@@ -301,12 +297,11 @@ export default function SheetPage({ params }) {
               "--revogrid-cell-text-color": "#202124",
               "--revogrid-selection-border-color": "#1a73e8",
               "--revogrid-selection-background": "rgba(26, 115, 232, 0.1)",
-              "--revogrid-cell-padding": "4px 8px", // Added cell padding
+              "--revogrid-cell-padding": "4px 8px",
               height: "100%",
               fontFamily: "arial, sans-serif",
               fontSize: "13px",
             }}
-            // --- END OF CORRECTION 2 ---
           />
         </div>
 

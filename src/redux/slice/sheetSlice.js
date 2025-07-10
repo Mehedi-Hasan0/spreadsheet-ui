@@ -1,5 +1,6 @@
 // redux/slice/sheetSlice.js
-import { createSlice } from "@reduxjs/toolkit";
+import { createSlice, createAsyncThunk } from "@reduxjs/toolkit";
+import { formulaService } from "@/lib/formulaService";
 
 // Cell factory function following SoC pattern
 const createEmptyCell = () => ({
@@ -45,6 +46,92 @@ const initialState = {
   lastSaved: null,
 };
 
+// Redux Thunk to handle cell updates and recalculations
+export const updateAndRecalculate = createAsyncThunk(
+  "sheet/updateAndRecalculate",
+  async ({ address, inputValue }, { dispatch, getState }) => {
+    // 1. Update the cell immediately
+    dispatch(sheetSlice.actions.updateCellFromInput({ address, inputValue }));
+
+    let state = getState().sheet;
+
+    console.log("Thunk: Initial state after update:", {
+      address,
+      inputValue,
+      cells: state.cells,
+    });
+
+    const updatedCell = state.cells[address];
+
+    // 2. Register formula
+    if (updatedCell.formula) {
+      const registerResult = await formulaService.registerFormula(address, updatedCell.formula);
+
+      console.log(registerResult, "Thunk: Formula registered for address:", address);
+    } else {
+      await formulaService.registerFormula(address, "");
+    }
+
+    // 3. Create a list of all cells to update (the edited cell + its dependents)
+    const dependents = formulaService.getDependents(address);
+
+    console.log("Thunk: Dependents for address", address, ":", dependents);
+
+    const cellsToRecalculate = new Set([address, ...dependents]);
+
+    console.log("Thunk: Cells to recalculate:", Array.from(cellsToRecalculate));
+
+    const calculationUpdates = {};
+
+    // 4. THIS IS THE CRITICAL FIX: We need a loop that continues until all calculations are stable.
+    // For simplicity, we can just iterate a few times, but a more robust solution would check for changes.
+    // For this app, a double iteration will solve most simple cases (e.g. C1=B1, B1=A1).
+    for (let i = 0; i < 5; i++) {
+      // Iterate to resolve chained dependencies
+      let changesMade = false;
+      // Get the absolute latest state on each iteration
+      const currentCells = getState().sheet.cells;
+
+      for (const cellAddress of cellsToRecalculate) {
+        const cellToCalc = currentCells[cellAddress];
+
+        if (cellToCalc && cellToCalc.formula) {
+          const result = await formulaService.calculate(
+            cellAddress,
+            cellToCalc.formula,
+            currentCells
+          );
+
+          console.log(
+            result,
+            "Thunk: Calculation result for address:",
+            cellAddress,
+            cellToCalc.formula,
+            currentCells
+          );
+
+          // Check if the new value is different from the old one
+          if (
+            cellToCalc.value !== result.value ||
+            cellToCalc.display !== result.display
+          ) {
+            calculationUpdates[cellAddress] = result;
+            changesMade = true;
+          }
+        }
+      }
+
+      // If changes were made, apply them and continue the loop
+      if (changesMade && Object.keys(calculationUpdates).length > 0) {
+        dispatch(sheetSlice.actions.applyCalculations(calculationUpdates));
+      } else {
+        // If no changes were made in an iteration, the sheet is stable.
+        break;
+      }
+    }
+  }
+);
+
 const sheetSlice = createSlice({
   name: "sheet",
   initialState,
@@ -52,21 +139,22 @@ const sheetSlice = createSlice({
     // Main action for updating cells from user input
     updateCellFromInput: (state, action) => {
       const { address, inputValue } = action.payload;
+      console.log("Reducer: updateCellFromInput called with", {
+        address,
+        inputValue,
+      });
 
-      // Ensure cell exists
       if (!state.cells[address]) {
         state.cells[address] = createEmptyCell();
       }
-
       const cell = state.cells[address];
 
-      // Determine if it's a formula or a direct value
-      if (inputValue.startsWith("=")) {
+      if (typeof inputValue === "string" && inputValue.startsWith("=")) {
         cell.formula = inputValue;
-        // The value/display will be updated by the calculation step
+        cell.display = inputValue; // Show formula initially
+        cell.value = null; // Clear previous value
       } else {
         cell.formula = null;
-        // Attempt to convert to a number, otherwise keep as string
         const numValue = parseFloat(inputValue);
         cell.value = isNaN(numValue) ? inputValue : numValue;
         cell.display = String(cell.value);
@@ -76,6 +164,7 @@ const sheetSlice = createSlice({
     // Apply calculated formula results
     applyCalculations: (state, action) => {
       const updates = action.payload;
+      console.log("Reducer: applyCalculations called with", updates);
       for (const address in updates) {
         if (state.cells[address]) {
           state.cells[address].value = updates[address].value;
