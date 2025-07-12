@@ -1,4 +1,4 @@
-// app/sheet/[sheetId]/page.js
+// Updated page.js - Fixed RevoGrid formula integration
 "use client";
 
 import React, { useState, useEffect, use, useRef, useCallback } from "react";
@@ -37,6 +37,7 @@ const selectGridColumns = () => {
       name: colName,
       size: 100,
       sortable: false,
+      editable: true, // Ensure column is editable
     });
   }
   return columns;
@@ -52,6 +53,7 @@ export default function SheetPage({ params }) {
   const [showFileMenu, setShowFileMenu] = useState(false);
   const [sheetId, setSheetId] = useState(null);
   const [isGridReady, setIsGridReady] = useState(false);
+  const [pendingFormula, setPendingFormula] = useState(null);
 
   // Chart state
   const [charts, setCharts] = useState([]);
@@ -86,6 +88,91 @@ export default function SheetPage({ params }) {
       setIsGridReady(true);
     }
   }, [rows, columns]);
+
+  // Handle pending formula insertion when grid becomes ready
+  useEffect(() => {
+    if (isGridReady && pendingFormula && gridRef.current) {
+      const { cellAddress, formula } = pendingFormula;
+      console.log("Applying pending formula:", cellAddress, formula);
+
+      // Clear pending formula first
+      setPendingFormula(null);
+
+      // Use setTimeout to ensure grid is fully rendered
+      setTimeout(() => {
+        startCellEdit(cellAddress, formula);
+      }, 100);
+    }
+  }, [isGridReady, pendingFormula]);
+
+  // Improved cell edit function
+  const startCellEdit = useCallback((cellAddress, formula) => {
+    if (!gridRef.current || !cellAddress) {
+      console.error("Grid reference or cell address not available");
+      return;
+    }
+
+    const match = cellAddress.match(/([A-Z]+)(\d+)/);
+    if (!match) {
+      console.error("Invalid cell address format:", cellAddress);
+      return;
+    }
+
+    const prop = match[1];
+    const rowIndex = parseInt(match[2], 10) - 1;
+
+    console.log("Starting edit for:", { prop, rowIndex, formula });
+
+    try {
+      // Method 1: Try using the native element setEdit method
+      if (gridRef.current.nativeElement?.setEdit) {
+        console.log("Using nativeElement.setEdit");
+        gridRef.current.nativeElement.setEdit(rowIndex, prop, formula);
+        return;
+      }
+
+      // Method 2: Try using the ref directly
+      if (gridRef.current.setEdit) {
+        console.log("Using ref.setEdit");
+        gridRef.current.setEdit(rowIndex, prop, formula);
+        return;
+      }
+
+      // Method 3: Try dispatching a custom event to trigger edit
+      if (gridRef.current.nativeElement) {
+        console.log("Dispatching edit event");
+        const editEvent = new CustomEvent("revogrid:edit", {
+          detail: {
+            rowIndex,
+            prop,
+            val: formula,
+          },
+        });
+        gridRef.current.nativeElement.dispatchEvent(editEvent);
+        return;
+      }
+
+      // Method 4: Try focusing the cell and simulating edit
+      console.log("Trying focus and edit simulation");
+      const gridElement = gridRef.current.nativeElement || gridRef.current;
+      if (gridElement) {
+        // Try to focus the specific cell
+        const cellElement = gridElement.querySelector(
+          `[data-row="${rowIndex}"][data-col="${prop}"]`
+        );
+        if (cellElement) {
+          cellElement.focus();
+          cellElement.click();
+          // Double click to start edit
+          cellElement.dispatchEvent(
+            new MouseEvent("dblclick", { bubbles: true })
+          );
+        }
+      }
+    } catch (error) {
+      console.error("Error starting cell edit:", error);
+    }
+  }, []);
 
   // Create default chart data
   const createDefaultChartData = (chartType) => {
@@ -130,7 +217,7 @@ export default function SheetPage({ params }) {
         } Chart`,
         data: createDefaultChartData(chartType),
         position: {
-          top: 50 + charts.length * 30, // Offset each new chart
+          top: 50 + charts.length * 30,
           left: 50 + charts.length * 30,
         },
         size: {
@@ -161,9 +248,10 @@ export default function SheetPage({ params }) {
     );
   }, []);
 
-  // Existing event handlers remain the same...
+  // Event handlers
   const handleAfterEdit = useCallback(
     (e) => {
+      console.log("After edit event:", e.detail);
       const address = `${e.detail.prop}${e.detail.rowIndex + 1}`;
       const inputValue = e.detail.val;
       dispatch(updateAndRecalculate({ address, inputValue }));
@@ -172,38 +260,45 @@ export default function SheetPage({ params }) {
   );
 
   const handleBeforeEdit = useCallback((e) => {
-    //
+    console.log("Before edit event:", e.detail);
   }, []);
 
   const handleCellFocus = useCallback((e) => {
+    console.log("Cell focus event:", e.detail);
     if (e.detail && e.detail.prop && e.detail.rowIndex !== undefined) {
       const address = `${e.detail.prop}${e.detail.rowIndex + 1}`;
       setSelectedCell(address);
     }
   }, []);
 
+  // Updated formula select handler
   const handleFormulaSelect = useCallback(
     (cellAddress, formula) => {
-      if (!isGridReady || !gridRef.current?.nativeElement) {
-        console.error(
-          "Grid is not ready or its reference is not available to start editing."
-        );
+      console.log("Formula select:", { cellAddress, formula, isGridReady });
+
+      if (!cellAddress) {
+        console.error("No cell address provided");
         return;
       }
 
-      const match = cellAddress.match(/([A-Z]+)(\d+)/);
-      if (!match) return;
+      if (!isGridReady) {
+        console.log("Grid not ready, storing formula for later");
+        setPendingFormula({ cellAddress, formula });
+        return;
+      }
 
-      const prop = match[1];
-      const rowIndex = parseInt(match[2], 10) - 1;
+      // Clear any pending formula
+      setPendingFormula(null);
 
-      gridRef.current.nativeElement.setEdit(rowIndex, prop, formula);
+      // Start edit immediately
+      startCellEdit(cellAddress, formula);
     },
-    [isGridReady]
+    [isGridReady, startCellEdit]
   );
 
   const handleFormulaCommit = useCallback(
     (address, value) => {
+      console.log("Formula commit:", { address, value });
       if (address) {
         dispatch(updateAndRecalculate({ address, inputValue: value }));
       }
@@ -218,17 +313,28 @@ export default function SheetPage({ params }) {
   }, [storageHook]);
 
   const handleGridReady = useCallback(() => {
+    console.log("Grid ready event fired");
     if (initialSetupDone.current) {
       return;
     }
-    console.log("Grid is now ready (onAfterrender fired).");
+
     setIsGridReady(true);
 
     if (!selectedCell) {
       setSelectedCell("A1");
     }
+
     initialSetupDone.current = true;
   }, [selectedCell]);
+
+  // Additional grid event handlers for better debugging
+  const handleGridMount = useCallback(() => {
+    console.log("Grid mounted");
+  }, []);
+
+  const handleGridUnmount = useCallback(() => {
+    console.log("Grid unmounted");
+  }, []);
 
   const selectedCellContent = cells[selectedCell]?.value || "";
 
@@ -308,9 +414,12 @@ export default function SheetPage({ params }) {
             onBeforeedit={handleBeforeEdit}
             onBeforecellfocus={handleCellFocus}
             onAfterrender={handleGridReady}
+            onMounted={handleGridMount}
+            onUnmounted={handleGridUnmount}
             range={true}
             rowHeaders={true}
             columnHeaders={true}
+            readonly={false}
             style={{
               height: "100%",
             }}
