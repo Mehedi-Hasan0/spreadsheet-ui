@@ -15,8 +15,16 @@ import {
   DollarSign,
   Hash,
 } from "lucide-react";
+import ChartDropdown from "./ChartDropDown";
 
-export default function Toolbar() {
+export default function Toolbar({ onChartCreate }) {
+
+  const handleChartSelect = (chartType) => {
+      console.log(`Selected chart type: ${chartType}`);
+      if (onChartCreate) {
+        onChartCreate(chartType);
+      }
+  };
   return (
     <div className="border-b border-gray-200 bg-white px-4 py-2">
       <div className="flex items-center space-x-1">
@@ -94,6 +102,7 @@ export default function Toolbar() {
         <button className="p-1 hover:bg-gray-100 rounded" title="Percentage">
           <Percent size={16} />
         </button>
+        <ChartDropdown onChartSelect={handleChartSelect} />
       </div>
     </div>
   );

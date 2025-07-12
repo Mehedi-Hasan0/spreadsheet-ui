@@ -1,7 +1,7 @@
 // app/sheet/[sheetId]/page.js
 "use client";
 
-import React, { useState, useEffect, use } from "react";
+import React, { useState, useEffect, use, useRef, useCallback } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { RevoGrid } from "@revolist/react-datagrid";
 import { updateAndRecalculate } from "@/redux/slice/sheetSlice";
@@ -11,8 +11,10 @@ import Toolbar from "@/components/sheet/Toolbar";
 import FormulaBar from "@/components/sheet/FormulaBar";
 import FileMenu from "@/components/sheet/FileMenu";
 import SheetTabs from "@/components/sheet/SheetTabs";
+import ChartOverlay from "@/components/sheet/ChartOverlay";
+import { formulaService } from "@/lib/formulaService";
 
-// Simple selectors to format data for RevoGrid
+// Selectors remain the same...
 const selectGridRows = (state) => {
   const rows = [];
   for (let r = 0; r < 25; r++) {
@@ -45,18 +47,20 @@ export default function SheetPage({ params }) {
   const rows = useSelector(selectGridRows);
   const columns = selectGridColumns();
   const cells = useSelector((state) => state.sheet.cells);
-  const isLoading = useSelector((state) => state.sheet.isLoading);
 
   const [selectedCell, setSelectedCell] = useState(null);
   const [showFileMenu, setShowFileMenu] = useState(false);
   const [sheetId, setSheetId] = useState(null);
-  // Added state for tracking editing cell and pending value
-  const [currentEditingCell, setCurrentEditingCell] = useState(null);
-  const [pendingEditValue, setPendingEditValue] = useState(null);
+  const [isGridReady, setIsGridReady] = useState(false);
 
+  // Chart state
+  const [charts, setCharts] = useState([]);
+
+  const gridRef = useRef(null);
+  const gridContainerRef = useRef(null);
+  const initialSetupDone = useRef(false);
   const useParams = use(params);
 
-  // Fix: Use useEffect to handle sheetId from params
   useEffect(() => {
     if (useParams?.sheetId) {
       setSheetId(useParams?.sheetId);
@@ -64,146 +68,177 @@ export default function SheetPage({ params }) {
   }, [useParams?.sheetId]);
 
   const storageHook = usePersistentStorage(sheetId);
-  // useFormulaCalculation();
 
   useEffect(() => {
     if (storageHook?.isLoaded && sheetId) {
       console.log("Storage loaded for sheet:", sheetId);
-      console.log("Current cells:", Object.keys(cells).length);
-
-      const sampleCells = Object.entries(cells)
-        .filter(([, cell]) => cell.value !== "")
-        .slice(0, 5);
-      console.log("Sample cells with data:", sampleCells);
     }
-  }, [storageHook?.isLoaded, sheetId, cells]);
+  }, [storageHook?.isLoaded, sheetId]);
 
-  const handleAfterEdit = (e) => {
-    console.log("afteredit event triggered:", e);
-    const address = `${e.detail.prop}${e.detail.rowIndex + 1}`;
-    const inputValue = e.detail.val;
-    console.log(`After edit cell ${address} with value:`, inputValue);
-    dispatch(updateAndRecalculate({ address, inputValue }));
-    // Clear editing state after saving
-    setCurrentEditingCell(null);
-    setPendingEditValue(null);
+  useEffect(() => {
+    if (rows.length > 0 && !initialSetupDone.current) {
+      const gridData = rows.map((row) =>
+        columns.map((col) => row[col.prop] || "")
+      );
+
+      formulaService.initialize(gridData);
+      initialSetupDone.current = true;
+      setIsGridReady(true);
+    }
+  }, [rows, columns]);
+
+  // Create default chart data
+  const createDefaultChartData = (chartType) => {
+    const defaultData = {
+      labels: ["January", "February", "March", "April", "May", "June"],
+      datasets: [
+        {
+          label: "Sample Data",
+          data: [12, 19, 3, 5, 2, 3],
+          backgroundColor: [
+            "rgba(255, 99, 132, 0.6)",
+            "rgba(54, 162, 235, 0.6)",
+            "rgba(255, 205, 86, 0.6)",
+            "rgba(75, 192, 192, 0.6)",
+            "rgba(153, 102, 255, 0.6)",
+            "rgba(255, 159, 64, 0.6)",
+          ],
+          borderColor: [
+            "rgba(255, 99, 132, 1)",
+            "rgba(54, 162, 235, 1)",
+            "rgba(255, 205, 86, 1)",
+            "rgba(75, 192, 192, 1)",
+            "rgba(153, 102, 255, 1)",
+            "rgba(255, 159, 64, 1)",
+          ],
+          borderWidth: 1,
+        },
+      ],
+    };
+
+    return defaultData;
   };
 
-  const handleBeforeEdit = (e) => {
-    console.log("beforeedit event triggered:", e);
-    const address = `${e.detail.prop}${e.detail.rowIndex + 1}`;
-    const currentValue = e.detail.val;
-    console.log(
-      `Before edit cell ${address} with current value:`,
-      currentValue
+  // Handle chart creation
+  const handleChartCreate = useCallback(
+    (chartType) => {
+      const newChart = {
+        id: Date.now(),
+        type: chartType,
+        title: `${
+          chartType.charAt(0).toUpperCase() + chartType.slice(1)
+        } Chart`,
+        data: createDefaultChartData(chartType),
+        position: {
+          top: 50 + charts.length * 30, // Offset each new chart
+          left: 50 + charts.length * 30,
+        },
+        size: {
+          width: 400,
+          height: 300,
+        },
+      };
+
+      setCharts((prevCharts) => [...prevCharts, newChart]);
+      console.log(`Created ${chartType} chart`);
+    },
+    [charts.length]
+  );
+
+  // Handle chart position update
+  const handleChartPositionUpdate = useCallback((chartId, newPosition) => {
+    setCharts((prevCharts) =>
+      prevCharts.map((chart) =>
+        chart.id === chartId ? { ...chart, position: newPosition } : chart
+      )
     );
-  };
+  }, []);
 
-  const handleBeforeEditStart = (e) => {
-    console.log("beforeeditstart event triggered:", e);
-    const address = `${e.detail.prop}${e.detail.rowIndex + 1}`;
-    console.log(`Edit started for cell ${address}`);
-    setCurrentEditingCell(address);
-    setPendingEditValue(e.detail.val);
-  };
+  // Handle chart close
+  const handleChartClose = useCallback((chartId) => {
+    setCharts((prevCharts) =>
+      prevCharts.filter((chart) => chart.id !== chartId)
+    );
+  }, []);
 
-  const handleBeforeCellFocus = (e) => {
-    console.log("beforecellfocus event triggered:", e);
-    const newAddress = `${e.detail.prop}${e.detail.rowIndex + 1}`;
-    setSelectedCell(newAddress);
+  // Existing event handlers remain the same...
+  const handleAfterEdit = useCallback(
+    (e) => {
+      const address = `${e.detail.prop}${e.detail.rowIndex + 1}`;
+      const inputValue = e.detail.val;
+      dispatch(updateAndRecalculate({ address, inputValue }));
+    },
+    [dispatch]
+  );
 
-    // If we have a cell being edited and we're moving to a different cell
-    if (
-      currentEditingCell &&
-      pendingEditValue !== null &&
-      newAddress !== currentEditingCell
-    ) {
-      console.log(
-        `Auto-saving cell ${currentEditingCell} with value:`,
-        pendingEditValue
-      );
-      dispatch(
-        updateAndRecalculate({
-          address: currentEditingCell,
-          inputValue: pendingEditValue,
-        })
-      );
-      // Clear editing state
-      setCurrentEditingCell(null);
-      setPendingEditValue(null);
+  const handleBeforeEdit = useCallback((e) => {
+    //
+  }, []);
+
+  const handleCellFocus = useCallback((e) => {
+    if (e.detail && e.detail.prop && e.detail.rowIndex !== undefined) {
+      const address = `${e.detail.prop}${e.detail.rowIndex + 1}`;
+      setSelectedCell(address);
     }
-  };
+  }, []);
 
-  const handleCellEditInit = (e) => {
-    console.log("celleditinit event triggered:", e);
-    const address = `${e.detail.prop}${e.detail.rowIndex + 1}`;
-    console.log(`Cell edit init for ${address}`);
-    setCurrentEditingCell(address);
-    setPendingEditValue(e.detail.val);
-  };
+  const handleFormulaSelect = useCallback(
+    (cellAddress, formula) => {
+      if (!isGridReady || !gridRef.current?.nativeElement) {
+        console.error(
+          "Grid is not ready or its reference is not available to start editing."
+        );
+        return;
+      }
 
-  const handleCellEditApply = (e) => {
-    console.log("celleditapply event triggered:", e);
-    const address = `${e.detail.prop}${e.detail.rowIndex + 1}`;
-    console.log(`Cell edit apply for ${address} with value:`, e.detail.val);
-    // Update the pending value as user types
-    setPendingEditValue(e.detail.val);
-  };
+      const match = cellAddress.match(/([A-Z]+)(\d+)/);
+      if (!match) return;
 
-  const handleCloseEdit = (e) => {
-    console.log("closeedit event triggered:", e);
-    // If we have pending changes, save them
-    if (currentEditingCell && pendingEditValue !== null) {
-      console.log(
-        `Auto-saving on close edit for cell ${currentEditingCell} with value:`,
-        pendingEditValue
-      );
-      dispatch(
-        updateAndRecalculate({
-          address: currentEditingCell,
-          inputValue: pendingEditValue,
-        })
-      );
-    }
-    // Clear editing state
-    setCurrentEditingCell(null);
-    setPendingEditValue(null);
-  };
+      const prop = match[1];
+      const rowIndex = parseInt(match[2], 10) - 1;
 
-  const handleFormulaBarChange = (value) => {
-    console.log("Formula bar change:", value);
-    if (selectedCell) {
-      console.log(`Updating ${selectedCell} via formula bar:`, value);
-      dispatch(
-        updateAndRecalculate({ address: selectedCell, inputValue: value })
-      );
-    }
-  };
+      gridRef.current.nativeElement.setEdit(rowIndex, prop, formula);
+    },
+    [isGridReady]
+  );
 
-  const getCurrentCellValue = () => {
-    if (!selectedCell) return "";
-    const cell = cells[selectedCell];
-    return cell?.formula || cell?.value || "";
-  };
+  const handleFormulaCommit = useCallback(
+    (address, value) => {
+      if (address) {
+        dispatch(updateAndRecalculate({ address, inputValue: value }));
+      }
+    },
+    [dispatch]
+  );
 
-  const handleSave = () => {
+  const handleSave = useCallback(() => {
     if (storageHook?.saveNow) {
-      console.log("Manual save triggered");
       storageHook.saveNow();
     }
-  };
+  }, [storageHook]);
 
+  const handleGridReady = useCallback(() => {
+    if (initialSetupDone.current) {
+      return;
+    }
+    console.log("Grid is now ready (onAfterrender fired).");
+    setIsGridReady(true);
+
+    if (!selectedCell) {
+      setSelectedCell("A1");
+    }
+    initialSetupDone.current = true;
+  }, [selectedCell]);
+
+  const selectedCellContent = cells[selectedCell]?.value || "";
+
+  // Loading states
   if (sheetId && !storageHook?.isLoaded) {
     return (
-      <div className="h-screen flex items-center justify-center bg-white">
+      <div className="h-screen flex items-center justify-center">
         <div className="text-center">
-          <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading sheet {sheetId}...</p>
-          {storageHook?.loadingError && (
-            <p className="text-red-500 mt-2">
-              Error: {storageHook.loadingError}
-            </p>
-          )}
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div>
+          <p className="mt-2 text-gray-600">Loading sheet...</p>
         </div>
       </div>
     );
@@ -211,101 +246,87 @@ export default function SheetPage({ params }) {
 
   if (!sheetId) {
     return (
-      <div className="h-screen flex items-center justify-center bg-white">
+      <div className="h-screen flex items-center justify-center">
         <div className="text-center">
-          <p className="text-red-600">Error: No sheet ID provided</p>
+          <p className="text-gray-600">Invalid sheet ID</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="h-screen flex flex-col bg-white">
+    <div className="h-screen flex flex-col bg-white relative">
       {/* Header */}
       <div className="bg-white border-b border-gray-200 shadow-sm">
         <div className="flex items-center justify-between px-4 py-2">
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-2">
-              <div className="w-8 h-8 bg-green-500 rounded flex items-center justify-center">
-                <span className="text-white font-bold text-sm">S</span>
-              </div>
-              <h1 className="text-xl font-medium text-gray-800">
-                Sheet {sheetId}
-              </h1>
-              {storageHook?.isLoaded && (
-                <span className="text-xs text-green-600 bg-green-100 px-2 py-1 rounded">
-                  Loaded
-                </span>
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center gap-2">
             <button
               onClick={() => setShowFileMenu(!showFileMenu)}
-              className="px-3 py-1 text-sm text-gray-600 hover:bg-gray-100 rounded"
+              className="px-3 py-1 text-sm hover:bg-gray-100 rounded"
             >
               File
             </button>
-            <button className="px-3 py-1 text-sm text-gray-600 hover:bg-gray-100 rounded">
-              Edit
-            </button>
-            <button className="px-3 py-1 text-sm text-gray-600 hover:bg-gray-100 rounded">
-              View
-            </button>
             <button
               onClick={handleSave}
-              className="px-3 py-1 text-sm text-white bg-blue-500 hover:bg-blue-600 rounded"
+              className="px-3 py-1 text-sm hover:bg-gray-100 rounded"
             >
               Save
             </button>
           </div>
+
+          {showFileMenu && (
+            <FileMenu
+              onClose={() => setShowFileMenu(false)}
+              onSave={handleSave}
+              sheetId={sheetId}
+            />
+          )}
         </div>
 
-        {showFileMenu && <FileMenu onClose={() => setShowFileMenu(false)} />}
-        <Toolbar />
+        <Toolbar onChartCreate={handleChartCreate} />
         <FormulaBar
           selectedCell={selectedCell}
-          value={getCurrentCellValue()}
-          onChange={handleFormulaBarChange}
+          cellContent={selectedCellContent}
+          onFormulaSelect={handleFormulaSelect}
+          onFormulaCommit={handleFormulaCommit}
+          isGridReady={isGridReady}
         />
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Grid Container */}
-        <div className="flex-1 bg-white">
+      <div className="flex-1 flex flex-col overflow-hidden relative">
+        <div
+          ref={gridContainerRef}
+          className="flex-1 bg-white relative overflow-hidden"
+        >
           <RevoGrid
+            ref={gridRef}
             theme="material"
             source={rows}
             columns={columns}
             onAfteredit={handleAfterEdit}
             onBeforeedit={handleBeforeEdit}
-            onBeforeeditstart={handleBeforeEditStart}
-            onBeforecellfocus={handleBeforeCellFocus}
-            onCelleditinit={handleCellEditInit}
-            onCelleditapply={handleCellEditApply}
-            onCloseedit={handleCloseEdit}
+            onBeforecellfocus={handleCellFocus}
+            onAfterrender={handleGridReady}
             range={true}
             rowHeaders={true}
             columnHeaders={true}
             style={{
-              "--revogrid-border-color": "#e0e0e0",
-              "--revogrid-header-background": "#f8f9fa",
-              "--revogrid-header-text-color": "#5f6368",
-              "--revogrid-cell-background": "#ffffff",
-              "--revogrid-cell-text-color": "#202124",
-              "--revogrid-selection-border-color": "#1a73e8",
-              "--revogrid-selection-background": "rgba(26, 115, 232, 0.1)",
-              "--revogrid-cell-padding": "4px 8px",
               height: "100%",
-              fontFamily: "arial, sans-serif",
-              fontSize: "13px",
             }}
           />
+
+          {/* Chart Overlays */}
+          {charts.map((chart) => (
+            <ChartOverlay
+              key={chart.id}
+              chart={chart}
+              onClose={() => handleChartClose(chart.id)}
+              onUpdatePosition={handleChartPositionUpdate}
+            />
+          ))}
         </div>
 
-        {/* Sheet Tabs */}
         <SheetTabs currentSheetId={sheetId} />
       </div>
     </div>

@@ -54,84 +54,36 @@ export const updateAndRecalculate = createAsyncThunk(
     dispatch(sheetSlice.actions.updateCellFromInput({ address, inputValue }));
 
     let state = getState().sheet;
-
-    console.log("Thunk: Initial state after update:", {
-      address,
-      inputValue,
-      cells: state.cells,
-    });
-
     const updatedCell = state.cells[address];
 
     // 2. Register formula
-    if (updatedCell.formula) {
-      const registerResult = await formulaService.registerFormula(address, updatedCell.formula);
+    await formulaService.registerFormula(
+      address,
+      updatedCell.formula || inputValue
+    );
 
-      console.log(registerResult, "Thunk: Formula registered for address:", address);
-    } else {
-      await formulaService.registerFormula(address, "");
-    }
-
-    // 3. Create a list of all cells to update (the edited cell + its dependents)
+    // 3. Get dependents and recalculate
     const dependents = formulaService.getDependents(address);
-
-    console.log("Thunk: Dependents for address", address, ":", dependents);
-
-    const cellsToRecalculate = new Set([address, ...dependents]);
-
-    console.log("Thunk: Cells to recalculate:", Array.from(cellsToRecalculate));
-
+    const cellsToRecalculate = [address, ...dependents];
     const calculationUpdates = {};
 
-    // 4. THIS IS THE CRITICAL FIX: We need a loop that continues until all calculations are stable.
-    // For simplicity, we can just iterate a few times, but a more robust solution would check for changes.
-    // For this app, a double iteration will solve most simple cases (e.g. C1=B1, B1=A1).
-    for (let i = 0; i < 5; i++) {
-      // Iterate to resolve chained dependencies
-      let changesMade = false;
-      // Get the absolute latest state on each iteration
-      const currentCells = getState().sheet.cells;
-
-      for (const cellAddress of cellsToRecalculate) {
-        const cellToCalc = currentCells[cellAddress];
-
-        if (cellToCalc && cellToCalc.formula) {
-          const result = await formulaService.calculate(
-            cellAddress,
-            cellToCalc.formula,
-            currentCells
-          );
-
-          console.log(
-            result,
-            "Thunk: Calculation result for address:",
-            cellAddress,
-            cellToCalc.formula,
-            currentCells
-          );
-
-          // Check if the new value is different from the old one
-          if (
-            cellToCalc.value !== result.value ||
-            cellToCalc.display !== result.display
-          ) {
-            calculationUpdates[cellAddress] = result;
-            changesMade = true;
-          }
-        }
+    for (const cellAddress of cellsToRecalculate) {
+      const cellToCalc = state.cells[cellAddress];
+      if (cellToCalc?.formula) {
+        const result = await formulaService.calculate(
+          cellAddress,
+          cellToCalc.formula,
+          state.cells
+        );
+        calculationUpdates[cellAddress] = result;
       }
+    }
 
-      // If changes were made, apply them and continue the loop
-      if (changesMade && Object.keys(calculationUpdates).length > 0) {
-        dispatch(sheetSlice.actions.applyCalculations(calculationUpdates));
-      } else {
-        // If no changes were made in an iteration, the sheet is stable.
-        break;
-      }
+    if (Object.keys(calculationUpdates).length > 0) {
+      dispatch(sheetSlice.actions.applyCalculations(calculationUpdates));
     }
   }
 );
-
 const sheetSlice = createSlice({
   name: "sheet",
   initialState,
