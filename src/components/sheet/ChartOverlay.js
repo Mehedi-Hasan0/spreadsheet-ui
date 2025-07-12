@@ -74,17 +74,26 @@ const ChartOverlay = ({
     [chart.size, getGridBounds]
   );
 
-  // Handle mouse down on drag handle
+  // Handle mouse down anywhere on the chart
   const handleMouseDown = useCallback((e) => {
-    if (e.target.closest(".chart-drag-handle")) {
-      const rect = overlayRef.current.getBoundingClientRect();
-      setIsDragging(true);
-      setDragStart({
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top,
-      });
-      e.preventDefault();
+    // Don't start dragging if clicking on the close button
+    if (e.target.closest('button[title="Close Chart"]')) {
+      return;
     }
+
+    // Don't start dragging if clicking on the resize handle
+    if (e.target.closest(".resize-handle")) {
+      return;
+    }
+
+    const rect = overlayRef.current.getBoundingClientRect();
+    setIsDragging(true);
+    setDragStart({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    });
+    e.preventDefault();
+    e.stopPropagation();
   }, []);
 
   // Handle mouse move during drag
@@ -172,6 +181,14 @@ const ChartOverlay = ({
                   },
                 }
               : {},
+          // Disable Chart.js interactions to prevent conflicts with dragging
+          interaction: {
+            intersect: false,
+          },
+          onHover: (event, elements) => {
+            // Change cursor to grab when hovering over chart
+            event.native.target.style.cursor = isDragging ? "grabbing" : "grab";
+          },
         },
       });
     };
@@ -183,7 +200,7 @@ const ChartOverlay = ({
         chartInstanceRef.current.destroy();
       }
     };
-  }, [chart]);
+  }, [chart, isDragging]);
 
   // Update position when chart prop changes
   useEffect(() => {
@@ -198,7 +215,7 @@ const ChartOverlay = ({
   return (
     <div
       ref={overlayRef}
-      className="absolute bg-white border border-gray-300 rounded-lg shadow-lg"
+      className="absolute bg-white border border-gray-300 rounded-lg shadow-lg select-none"
       style={{
         top: position.top,
         left: position.left,
@@ -207,12 +224,12 @@ const ChartOverlay = ({
         zIndex: 1000,
         minWidth: 300,
         minHeight: 200,
-        cursor: isDragging ? "grabbing" : "default",
+        cursor: isDragging ? "grabbing" : "grab",
       }}
       onMouseDown={handleMouseDown}
     >
-      {/* Chart Header with Drag Handle */}
-      <div className="chart-drag-handle flex items-center justify-between p-2 border-b border-gray-200 bg-gray-50 rounded-t-lg cursor-grab hover:bg-gray-100 active:cursor-grabbing">
+      {/* Chart Header */}
+      <div className="flex items-center justify-between p-2 border-b border-gray-200 bg-gray-50 rounded-t-lg">
         <div className="flex items-center gap-2 pointer-events-none">
           <Move size={16} className="text-gray-500" />
           <span className="text-sm font-medium text-gray-700">
@@ -221,7 +238,7 @@ const ChartOverlay = ({
         </div>
         <button
           onClick={onClose}
-          className="p-1 hover:bg-gray-200 rounded pointer-events-auto"
+          className="p-1 hover:bg-gray-200 rounded pointer-events-auto relative z-10"
           title="Close Chart"
         >
           <X size={16} className="text-gray-500" />
@@ -230,11 +247,18 @@ const ChartOverlay = ({
 
       {/* Chart Content */}
       <div className="p-4" style={{ height: "calc(100% - 50px)" }}>
-        <canvas ref={canvasRef} style={{ width: "100%", height: "100%" }} />
+        <canvas
+          ref={canvasRef}
+          style={{
+            width: "100%",
+            height: "100%",
+            cursor: isDragging ? "grabbing" : "grab",
+          }}
+        />
       </div>
 
       {/* Resize Handle */}
-      <div className="absolute bottom-0 right-0 w-4 h-4 bg-gray-300 cursor-se-resize opacity-50 hover:opacity-100">
+      <div className="resize-handle absolute bottom-0 right-0 w-4 h-4 bg-gray-300 cursor-se-resize opacity-50 hover:opacity-100 z-10">
         <div className="absolute bottom-1 right-1 w-2 h-2 bg-gray-500 rounded-full"></div>
       </div>
     </div>
